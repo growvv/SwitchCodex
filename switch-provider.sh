@@ -16,6 +16,20 @@ ENV_MODEL=""
 ENV_BASE_URL=""
 ENV_API_KEY=""
 ENV_AUTH_MODE=""
+PROBE_STATUS=""
+PROBE_DETAIL=""
+PROBE_LATENCY=""
+PROBE_HTTP_CODE=""
+
+COLOR_ENABLED=0
+CLR_RESET=""
+CLR_BOLD=""
+CLR_DIM=""
+CLR_RED=""
+CLR_GREEN=""
+CLR_YELLOW=""
+CLR_BLUE=""
+CLR_CYAN=""
 
 usage() {
   cat <<EOF2
@@ -25,9 +39,8 @@ Usage:
   $(basename "$0") save <profile>
   $(basename "$0") import <profile> <auth-file> <config-file>
   $(basename "$0") use <profile>
-  $(basename "$0") set [profile]
-  $(basename "$0") unset
-  $(basename "$0") install-shell [rc-file]
+  $(basename "$0") install [rc-file]
+  $(basename "$0") uninstall [rc-file]
   $(basename "$0") <profile>
   $(basename "$0") help
 
@@ -38,9 +51,8 @@ Profile layout:
 Examples:
   $(basename "$0") save api111
   $(basename "$0") import cliproxy ~/.codex/auth_cliproxy.json ~/.codex/config_cliproxy.toml
-  $(basename "$0") install-shell ~/.zshrc
-  $(basename "$0") set cliproxy
-  $(basename "$0") unset
+  $(basename "$0") install ~/.zshrc
+  $(basename "$0") uninstall ~/.zshrc
   $(basename "$0") list
   $(basename "$0") cliproxy
 EOF2
@@ -53,6 +65,83 @@ err() {
 
 note() {
   echo "$*" >&2
+}
+
+init_colors() {
+  if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
+    COLOR_ENABLED=1
+    CLR_RESET=$'\033[0m'
+    CLR_BOLD=$'\033[1m'
+    CLR_DIM=$'\033[2m'
+    CLR_RED=$'\033[31m'
+    CLR_GREEN=$'\033[32m'
+    CLR_YELLOW=$'\033[33m'
+    CLR_BLUE=$'\033[34m'
+    CLR_CYAN=$'\033[36m'
+  fi
+}
+
+paint() {
+  local color="$1"
+  local text="$2"
+  if [[ "$COLOR_ENABLED" -eq 1 ]]; then
+    printf '%b%s%b' "$color" "$text" "$CLR_RESET"
+  else
+    printf '%s' "$text"
+  fi
+}
+
+print_plain_padded() {
+  local text="$1"
+  local width="$2"
+  printf '%s' "$text"
+  if (( width > ${#text} )); then
+    printf '%*s' "$((width - ${#text}))" ""
+  fi
+}
+
+print_colored_padded() {
+  local color="$1"
+  local text="$2"
+  local width="$3"
+  paint "$color" "$text"
+  if (( width > ${#text} )); then
+    printf '%*s' "$((width - ${#text}))" ""
+  fi
+}
+
+color_for_file_state() {
+  case "$1" in
+    active|ready)
+      printf '%s' "$CLR_GREEN"
+      ;;
+    missing-auth|missing-config)
+      printf '%s' "$CLR_YELLOW"
+      ;;
+    empty)
+      printf '%s' "$CLR_RED"
+      ;;
+    *)
+      printf '%s' "$CLR_DIM"
+      ;;
+  esac
+}
+
+color_for_probe_state() {
+  case "$1" in
+    online)
+      printf '%s' "$CLR_GREEN"
+      ;;
+    auth-failed|missing-key|endpoint-mismatch|rate-limited)
+      printf '%s' "$CLR_YELLOW"
+      ;;
+    timeout|unreachable|server-error|curl-error|no-base-url)
+      printf '%s' "$CLR_RED"
+      ;;
+    *)
+      printf '%s' "$CLR_DIM"
+      ;;
+  esac
 }
 
 validate_profile_name() {
@@ -93,6 +182,172 @@ read_provider() {
   local provider
   provider="$(sed -nE 's/^[[:space:]]*model_provider[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$config_path" | head -n 1)"
   echo "${provider:-unknown}"
+}
+
+read_connection_fields() {
+  local config_path="$1"
+  local auth_path="$2"
+  python3 - "$config_path" "$auth_path" <<'PY'
+import json
+import re
+import sys
+
+try:
+    import tomllib  # py311+
+except Exception:
+    tomllib = None
+
+config_path, auth_path = sys.argv[1:3]
+provider = ""
+base_url = ""
+api_key = ""
+
+try:
+    if tomllib is not None:
+        with open(config_path, "rb") as f:
+            config = tomllib.load(f)
+        provider = config.get("model_provider") or ""
+        provider_cfg = (config.get("model_providers") or {}).get(provider, {}) if provider else {}
+        if isinstance(provider_cfg, dict):
+            base_url = str(provider_cfg.get("base_url") or "")
+    else:
+        with open(config_path, "r", encoding="utf-8") as f:
+            text = f.read()
+        provider_match = re.search(r'^\s*model_provider\s*=\s*"([^"]+)"', text, re.MULTILINE)
+        if provider_match:
+            provider = provider_match.group(1)
+        if provider:
+            in_section = False
+            section = f"[model_providers.{provider}]"
+            for raw_line in text.splitlines():
+                line = raw_line.strip()
+                if line.startswith("[") and line.endswith("]"):
+                    in_section = (line == section)
+                    continue
+                if in_section:
+                    base_match = re.match(r'^\s*base_url\s*=\s*"([^"]+)"', raw_line)
+                    if base_match:
+                        base_url = base_match.group(1)
+                        break
+except Exception:
+    pass
+
+try:
+    with open(auth_path, "r", encoding="utf-8") as f:
+        auth = json.load(f)
+    value = auth.get("OPENAI_API_KEY")
+    api_key = "" if value in (None, "") else str(value)
+except Exception:
+    pass
+
+print(f"provider\t{provider}")
+print(f"base_url\t{base_url}")
+print(f"api_key\t{api_key}")
+PY
+}
+
+probe_connection_quick() {
+  local base_url="${1:-}"
+  local api_key="${2:-}"
+  local probe_connect_timeout="${SP_PROBE_CONNECT_TIMEOUT:-0.8}"
+  local probe_max_time="${SP_PROBE_MAX_TIME:-1.8}"
+
+  PROBE_STATUS="skipped"
+  PROBE_DETAIL="-"
+  PROBE_LATENCY="-"
+  PROBE_HTTP_CODE="-"
+
+  if [[ -z "$base_url" ]]; then
+    PROBE_STATUS="no-base-url"
+    PROBE_DETAIL="base_url missing"
+    return 0
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    PROBE_STATUS="curl-error"
+    PROBE_DETAIL="curl not found"
+    return 0
+  fi
+
+  local probe_url raw exit_code http_code time_total err_msg
+  probe_url="${base_url%/}/models"
+
+  set +e
+  if [[ -n "$api_key" ]]; then
+    raw="$(curl -sS -o /dev/null \
+      --connect-timeout "$probe_connect_timeout" \
+      --max-time "$probe_max_time" \
+      -H "Authorization: Bearer $api_key" \
+      -w '%{http_code}\t%{time_total}\t%{errormsg}' \
+      "$probe_url")"
+  else
+    raw="$(curl -sS -o /dev/null \
+      --connect-timeout "$probe_connect_timeout" \
+      --max-time "$probe_max_time" \
+      -w '%{http_code}\t%{time_total}\t%{errormsg}' \
+      "$probe_url")"
+  fi
+  exit_code=$?
+  set -e
+
+  IFS=$'\t' read -r http_code time_total err_msg <<< "$raw"
+  http_code="${http_code:-000}"
+  PROBE_HTTP_CODE="$http_code"
+
+  if [[ -n "$time_total" ]]; then
+    PROBE_LATENCY="$(awk -v t="$time_total" 'BEGIN { printf "%.0fms", t * 1000 }')"
+  fi
+
+  if [[ "$exit_code" -ne 0 ]]; then
+    case "$exit_code" in
+      28)
+        PROBE_STATUS="timeout"
+        PROBE_DETAIL="probe timeout"
+        ;;
+      6|7)
+        PROBE_STATUS="unreachable"
+        PROBE_DETAIL="dns/connect failed"
+        ;;
+      *)
+        PROBE_STATUS="curl-error"
+        PROBE_DETAIL="curl exit $exit_code"
+        ;;
+    esac
+    [[ -n "$err_msg" ]] && PROBE_DETAIL="$err_msg"
+    return 0
+  fi
+
+  case "$http_code" in
+    2??|3??)
+      PROBE_STATUS="online"
+      PROBE_DETAIL="HTTP $http_code"
+      ;;
+    401|403)
+      if [[ -z "$api_key" ]]; then
+        PROBE_STATUS="missing-key"
+        PROBE_DETAIL="HTTP $http_code (no key)"
+      else
+        PROBE_STATUS="auth-failed"
+        PROBE_DETAIL="HTTP $http_code"
+      fi
+      ;;
+    404)
+      PROBE_STATUS="endpoint-mismatch"
+      PROBE_DETAIL="HTTP 404 /models"
+      ;;
+    429)
+      PROBE_STATUS="rate-limited"
+      PROBE_DETAIL="HTTP 429"
+      ;;
+    5??)
+      PROBE_STATUS="server-error"
+      PROBE_DETAIL="HTTP $http_code"
+      ;;
+    *)
+      PROBE_STATUS="http-$http_code"
+      PROBE_DETAIL="HTTP $http_code"
+      ;;
+  esac
 }
 
 copy_resolved() {
@@ -174,16 +429,6 @@ case ":\$PATH:" in
   *) export PATH="\$SWITCH_CODEX_HOME:\$PATH" ;;
 esac
 sp() {
-  local output exit_code subcommand
-  subcommand="\${1:-status}"
-  if [ "\$subcommand" = "set" ] || [ "\$subcommand" = "unset" ]; then
-    output="\$(switch-provider.sh "\$@")"
-    exit_code=\$?
-    if [ \$exit_code -eq 0 ] && [ -n "\$output" ]; then
-      eval "\$output"
-    fi
-    return \$exit_code
-  fi
   switch-provider.sh "\$@"
 }
 $MANAGED_END
@@ -214,6 +459,20 @@ write_managed_shell_block() {
   fi
 
   shell_block >> "$tmp_file"
+  mv -f "$tmp_file" "$rc_file"
+}
+
+remove_managed_shell_block() {
+  local rc_file="$1"
+  local tmp_file
+  [[ -f "$rc_file" ]] || return 0
+  tmp_file="$rc_file.tmp.$$"
+
+  awk -v begin="$MANAGED_BEGIN" -v end="$MANAGED_END" '
+    $0 == begin { skipping = 1; next }
+    $0 == end { skipping = 0; next }
+    !skipping { print }
+  ' "$rc_file" > "$tmp_file"
   mv -f "$tmp_file" "$rc_file"
 }
 
@@ -305,12 +564,42 @@ load_profile_env() {
   done < <(
     python3 - "$config_path" "$auth_path" <<'PY'
 import json
+import re
 import sys
-import tomllib
+
+try:
+    import tomllib  # py311+
+except Exception:
+    tomllib = None
 
 config_path, auth_path = sys.argv[1:3]
-with open(config_path, 'rb') as config_file:
-    config = tomllib.load(config_file)
+config = {}
+if tomllib is not None:
+    with open(config_path, 'rb') as config_file:
+        config = tomllib.load(config_file)
+else:
+    with open(config_path, 'r', encoding='utf-8') as config_file:
+        text = config_file.read()
+    provider_match = re.search(r'^\s*model_provider\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    provider = provider_match.group(1) if provider_match else ''
+    provider_cfg = {}
+    if provider:
+        in_section = False
+        section = f"[model_providers.{provider}]"
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if line.startswith("[") and line.endswith("]"):
+                in_section = (line == section)
+                continue
+            if in_section:
+                base_match = re.match(r'^\s*base_url\s*=\s*"([^"]+)"', raw_line)
+                if base_match:
+                    provider_cfg["base_url"] = base_match.group(1)
+                    break
+    config = {
+        'model_provider': provider,
+        'model_providers': {provider: provider_cfg} if provider else {}
+    }
 with open(auth_path, 'r', encoding='utf-8') as auth_file:
     auth = json.load(auth_file)
 
@@ -404,14 +693,30 @@ emit_unset_shell() {
 
 cmd_list() {
   ensure_profiles_dir
+  init_colors
 
   local current_profile=""
   current_profile="$(active_profile || true)"
 
-  printf '%-18s %-14s %s\n' 'PROFILE' 'PROVIDER' 'STATE'
-
   local found=0
-  local dir base provider state
+  local dir base provider state probe_status probe_detail probe_latency row
+  local base_url="" api_key=""
+  local has_auth=0 has_config=0
+  local -a normal_rows=()
+  local active_row=""
+
+  local h_profile="PROFILE"
+  local h_provider="PROVIDER"
+  local h_state="FILE_STATE"
+  local h_connect="CONNECT"
+  local h_latency="LATENCY"
+  local h_detail="DETAIL"
+  local w_profile=${#h_profile}
+  local w_provider=${#h_provider}
+  local w_state=${#h_state}
+  local w_connect=${#h_connect}
+  local w_latency=${#h_latency}
+
   for dir in "$PROFILES_DIR"/*; do
     [[ -d "$dir" ]] || continue
     base="$(basename "$dir")"
@@ -419,9 +724,13 @@ cmd_list() {
     found=1
 
     state="ready"
-    [[ -f "$dir/auth.json" ]] || state="missing-auth"
-    [[ -f "$dir/config.toml" ]] || state="missing-config"
-    if [[ ! -f "$dir/auth.json" && ! -f "$dir/config.toml" ]]; then
+    has_auth=0
+    has_config=0
+    [[ -f "$dir/auth.json" ]] && has_auth=1
+    [[ -f "$dir/config.toml" ]] && has_config=1
+    [[ "$has_auth" -eq 1 ]] || state="missing-auth"
+    [[ "$has_config" -eq 1 ]] || state="missing-config"
+    if [[ "$has_auth" -eq 0 && "$has_config" -eq 0 ]]; then
       state="empty"
     fi
     if [[ "$base" == "$current_profile" ]]; then
@@ -429,32 +738,118 @@ cmd_list() {
     fi
 
     provider="$(read_provider "$dir/config.toml")"
-    printf '%-18s %-14s %s\n' "$base" "$provider" "$state"
+    base_url=""
+    api_key=""
+    probe_status="skipped"
+    probe_detail="-"
+    probe_latency="-"
+
+    if [[ "$has_auth" -eq 1 && "$has_config" -eq 1 ]]; then
+      while IFS=$'\t' read -r key value; do
+        case "$key" in
+          base_url)
+            base_url="$value"
+            ;;
+          api_key)
+            api_key="$value"
+            ;;
+        esac
+      done < <(read_connection_fields "$dir/config.toml" "$dir/auth.json")
+
+      probe_connection_quick "$base_url" "$api_key"
+      probe_status="$PROBE_STATUS"
+      probe_detail="$PROBE_DETAIL"
+      probe_latency="$PROBE_LATENCY"
+    fi
+
+    row="${base}"$'\t'"${provider}"$'\t'"${state}"$'\t'"${probe_status}"$'\t'"${probe_latency}"$'\t'"${probe_detail}"
+    if [[ "$state" == "active" ]]; then
+      active_row="$row"
+    else
+      normal_rows+=("$row")
+    fi
+
+    (( ${#base} > w_profile )) && w_profile=${#base}
+    (( ${#provider} > w_provider )) && w_provider=${#provider}
+    (( ${#state} > w_state )) && w_state=${#state}
+    (( ${#probe_status} > w_connect )) && w_connect=${#probe_status}
+    (( ${#probe_latency} > w_latency )) && w_latency=${#probe_latency}
   done
 
   if [[ "$found" -eq 0 ]]; then
     echo "(no profiles under $PROFILES_DIR)"
+    return 0
   fi
+
+  local header_line=""
+  header_line="$(printf "%-*s  %-*s  %-*s  %-*s  %-*s  %s" \
+    "$w_profile" "$h_profile" \
+    "$w_provider" "$h_provider" \
+    "$w_state" "$h_state" \
+    "$w_connect" "$h_connect" \
+    "$w_latency" "$h_latency" \
+    "$h_detail")"
+  if [[ "$COLOR_ENABLED" -eq 1 ]]; then
+    paint "${CLR_BOLD}${CLR_CYAN}" "$header_line"
+    printf '\n'
+  else
+    echo "$header_line"
+  fi
+
+  local -a rows=()
+  if [[ -n "$active_row" ]]; then
+    rows+=("$active_row")
+  fi
+  for row in "${normal_rows[@]}"; do
+    rows+=("$row")
+  done
+
+  for row in "${rows[@]}"; do
+    IFS=$'\t' read -r base provider state probe_status probe_latency probe_detail <<< "$row"
+    print_plain_padded "$base" "$w_profile"
+    printf '  '
+    print_plain_padded "$provider" "$w_provider"
+    printf '  '
+    print_colored_padded "$(color_for_file_state "$state")" "$state" "$w_state"
+    printf '  '
+    print_colored_padded "$(color_for_probe_state "$probe_status")" "$probe_status" "$w_connect"
+    printf '  '
+    print_colored_padded "$CLR_BLUE" "$probe_latency" "$w_latency"
+    printf '  '
+    paint "$CLR_DIM" "$probe_detail"
+    printf '\n'
+  done
 }
 
 cmd_status() {
-  local current_provider current_profile_value
+  init_colors
+
+  local current_provider
+  local current_base_url="" current_api_key=""
+  local probe_status="missing-files"
   current_provider="$(read_provider "$CONFIG_FILE")"
 
-  echo "codex_home: $CODEX_HOME"
-  echo "profiles_dir: $PROFILES_DIR"
-  echo "current_provider: $current_provider"
-
-  current_profile_value="$(active_profile || true)"
-  if [[ -n "$current_profile_value" ]]; then
-    echo "active_profile: $current_profile_value"
-    echo "auth_source: $(readlink "$AUTH_FILE")"
-    echo "config_source: $(readlink "$CONFIG_FILE")"
-  else
-    echo "active_profile: manual"
-    echo "auth_source: $AUTH_FILE"
-    echo "config_source: $CONFIG_FILE"
+  if [[ -f "$CONFIG_FILE" && -f "$AUTH_FILE" ]]; then
+    while IFS=$'\t' read -r key value; do
+      case "$key" in
+        base_url)
+          current_base_url="$value"
+          ;;
+        api_key)
+          current_api_key="$value"
+          ;;
+      esac
+    done < <(read_connection_fields "$CONFIG_FILE" "$AUTH_FILE")
+    probe_connection_quick "$current_base_url" "$current_api_key"
+    probe_status="$PROBE_STATUS"
   fi
+
+  paint "${CLR_BOLD}${CLR_CYAN}" "status"
+  printf ': '
+  paint "$(color_for_probe_state "$probe_status")" "$probe_status"
+  printf '\n'
+  paint "${CLR_BOLD}${CLR_CYAN}" "provider"
+  echo ": $current_provider"
 }
 
 cmd_save() {
@@ -553,16 +948,43 @@ cmd_unset() {
   note "Prepared environment cleanup."
 }
 
-cmd_install_shell() {
+cmd_install() {
   local rc_file="${1:-$(default_rc_file)}"
+  init_colors
   write_managed_shell_block "$rc_file"
 
-  echo "Installed shell integration"
-  echo "  rc_file  -> $rc_file"
-  echo "  path     -> $SCRIPT_DIR"
-  echo "  command  -> sp"
-  echo "  env flow -> sp set [profile] / sp unset"
-  echo "Run: source $rc_file"
+  if grep -Fq "$MANAGED_BEGIN" "$rc_file" && grep -Fq "$MANAGED_END" "$rc_file"; then
+    paint "$CLR_GREEN" "Install success"
+    printf '\n'
+  else
+    paint "$CLR_RED" "Install failed"
+    printf '\n'
+    return 1
+  fi
+
+  echo "  rc_file -> $rc_file"
+  echo "  path    -> $SCRIPT_DIR"
+  echo "  command -> sp"
+  paint "$CLR_CYAN" "Run: source $rc_file"
+  printf '\n'
+}
+
+cmd_uninstall() {
+  local rc_file="${1:-$(default_rc_file)}"
+  init_colors
+  remove_managed_shell_block "$rc_file"
+
+  if [[ -f "$rc_file" ]] && (grep -Fq "$MANAGED_BEGIN" "$rc_file" || grep -Fq "$MANAGED_END" "$rc_file"); then
+    paint "$CLR_RED" "Uninstall failed"
+    printf '\n'
+    return 1
+  fi
+
+  paint "$CLR_GREEN" "Uninstall success"
+  printf '\n'
+  echo "  rc_file -> $rc_file"
+  paint "$CLR_CYAN" "Run: source $rc_file"
+  printf '\n'
 }
 
 main() {
@@ -590,17 +1012,16 @@ main() {
       [[ $# -eq 2 ]] || err "Usage: $(basename "$0") use <profile>"
       cmd_use "$2"
       ;;
-    set)
-      [[ $# -le 2 ]] || err "Usage: $(basename "$0") set [profile]"
-      cmd_set "${2:-}"
+    install|install-shell)
+      [[ $# -le 2 ]] || err "Usage: $(basename "$0") install [rc-file]"
+      cmd_install "${2:-}"
       ;;
-    unset)
-      [[ $# -eq 1 ]] || err "Usage: $(basename "$0") unset"
-      cmd_unset
+    uninstall|uninstall-shell)
+      [[ $# -le 2 ]] || err "Usage: $(basename "$0") uninstall [rc-file]"
+      cmd_uninstall "${2:-}"
       ;;
-    install-shell)
-      [[ $# -le 2 ]] || err "Usage: $(basename "$0") install-shell [rc-file]"
-      cmd_install_shell "${2:-}"
+    set|unset)
+      err "Command '$command' has been removed"
       ;;
     *)
       [[ $# -eq 1 ]] || err "Unknown command: $command"
