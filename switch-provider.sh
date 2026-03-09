@@ -249,8 +249,9 @@ PY
 probe_connection_quick() {
   local base_url="${1:-}"
   local api_key="${2:-}"
+  local probe_max_time_override="${3:-}"
   local probe_connect_timeout="${SP_PROBE_CONNECT_TIMEOUT:-0.8}"
-  local probe_max_time="${SP_PROBE_MAX_TIME:-1.8}"
+  local probe_max_time="${probe_max_time_override:-${SP_PROBE_MAX_TIME:-1.8}}"
 
   PROBE_STATUS="skipped"
   PROBE_DETAIL="-"
@@ -756,7 +757,7 @@ cmd_list() {
         esac
       done < <(read_connection_fields "$dir/config.toml" "$dir/auth.json")
 
-      probe_connection_quick "$base_url" "$api_key"
+      probe_connection_quick "$base_url" "$api_key" "3"
       probe_status="$PROBE_STATUS"
       probe_detail="$PROBE_DETAIL"
       probe_latency="$PROBE_LATENCY"
@@ -827,6 +828,7 @@ cmd_status() {
   local current_provider
   local current_base_url="" current_api_key=""
   local probe_status="missing-files"
+  local probe_latency="-"
   current_provider="$(read_provider "$CONFIG_FILE")"
 
   if [[ -f "$CONFIG_FILE" && -f "$AUTH_FILE" ]]; then
@@ -842,11 +844,16 @@ cmd_status() {
     done < <(read_connection_fields "$CONFIG_FILE" "$AUTH_FILE")
     probe_connection_quick "$current_base_url" "$current_api_key"
     probe_status="$PROBE_STATUS"
+    probe_latency="$PROBE_LATENCY"
   fi
 
   paint "${CLR_BOLD}${CLR_CYAN}" "status"
   printf ': '
   paint "$(color_for_probe_state "$probe_status")" "$probe_status"
+  printf '\n'
+  paint "${CLR_BOLD}${CLR_CYAN}" "latency"
+  printf ': '
+  paint "$CLR_BLUE" "$probe_latency"
   printf '\n'
   paint "${CLR_BOLD}${CLR_CYAN}" "provider"
   echo ": $current_provider"
@@ -1012,11 +1019,11 @@ main() {
       [[ $# -eq 2 ]] || err "Usage: $(basename "$0") use <profile>"
       cmd_use "$2"
       ;;
-    install|install-shell)
+    install)
       [[ $# -le 2 ]] || err "Usage: $(basename "$0") install [rc-file]"
       cmd_install "${2:-}"
       ;;
-    uninstall|uninstall-shell)
+    uninstall)
       [[ $# -le 2 ]] || err "Usage: $(basename "$0") uninstall [rc-file]"
       cmd_uninstall "${2:-}"
       ;;
