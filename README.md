@@ -106,5 +106,5 @@ pwsh -NoProfile -File .\switch-provider.ps1 api111
 - `sp list` / `sp status` 会对 endpoint 做快速连接探测（默认探测 `<base_url>/models`）；在 TTY 终端下会彩色显示表头和状态。
 - `sp status` 展示三项：`status`、`latency` 和 `provider`。
 - `sp list` 会把当前 active profile 放在第一行，并按内容自适应列宽。
-- `sp list` 的连接探测超时默认按 `3` 秒执行（仅影响 list）。
-- 可选环境变量：`SP_PROBE_CONNECT_TIMEOUT`（默认 `0.8` 秒）、`SP_PROBE_MAX_TIME`（默认 `1.8` 秒，主要影响 `status`）。
+- `sp list` / `sp status` 的连接探测总超时默认按 `3` 秒执行。
+- 可选环境变量：`SP_PROBE_CONNECT_TIMEOUT`（默认 `0.8` 秒）、`SP_PROBE_MAX_TIME`（默认 `3` 秒）。

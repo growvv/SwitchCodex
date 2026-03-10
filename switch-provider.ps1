@@ -210,7 +210,7 @@ function Copy-ResolvedFile([string]$SourcePath, [string]$DestinationPath) {
 
 function Probe-ConnectionQuick([string]$BaseUrl, [string]$ApiKey, [double]$ProbeMaxTimeOverride = 0) {
   $probeConnectTimeout = if ($env:SP_PROBE_CONNECT_TIMEOUT) { [double]$env:SP_PROBE_CONNECT_TIMEOUT } else { 0.8 }
-  $probeMaxTime = if ($ProbeMaxTimeOverride -gt 0) { $ProbeMaxTimeOverride } elseif ($env:SP_PROBE_MAX_TIME) { [double]$env:SP_PROBE_MAX_TIME } else { 1.8 }
+  $probeMaxTime = if ($ProbeMaxTimeOverride -gt 0) { $ProbeMaxTimeOverride } elseif ($env:SP_PROBE_MAX_TIME) { [double]$env:SP_PROBE_MAX_TIME } else { 3 }
   $connectionTimeoutSec = [Math]::Max(1, [int][Math]::Ceiling($probeConnectTimeout))
   $operationTimeoutSec = [Math]::Max($connectionTimeoutSec, [int][Math]::Ceiling($probeMaxTime))
 

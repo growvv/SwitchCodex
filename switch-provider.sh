@@ -251,7 +251,7 @@ probe_connection_quick() {
   local api_key="${2:-}"
   local probe_max_time_override="${3:-}"
   local probe_connect_timeout="${SP_PROBE_CONNECT_TIMEOUT:-0.8}"
-  local probe_max_time="${probe_max_time_override:-${SP_PROBE_MAX_TIME:-1.8}}"
+  local probe_max_time="${probe_max_time_override:-${SP_PROBE_MAX_TIME:-3}}"
 
   PROBE_STATUS="skipped"
   PROBE_DETAIL="-"
@@ -270,28 +270,33 @@ probe_connection_quick() {
     return 0
   fi
 
-  local probe_url raw exit_code http_code time_total err_msg
+  local probe_url raw exit_code http_code time_total err_msg err_file
+  local -a curl_args
   probe_url="${base_url%/}/models"
+  err_file="$(mktemp "${TMPDIR:-/tmp}/switchcodex-curl-stderr.XXXXXX")"
+  curl_args=(
+    -sS
+    -o /dev/null
+    --connect-timeout "$probe_connect_timeout"
+    --max-time "$probe_max_time"
+    -w $'%{http_code}\t%{time_total}'
+  )
+  if [[ -n "$api_key" ]]; then
+    curl_args+=(-H "Authorization: Bearer $api_key")
+  fi
+  curl_args+=("$probe_url")
 
   set +e
-  if [[ -n "$api_key" ]]; then
-    raw="$(curl -sS -o /dev/null \
-      --connect-timeout "$probe_connect_timeout" \
-      --max-time "$probe_max_time" \
-      -H "Authorization: Bearer $api_key" \
-      -w '%{http_code}\t%{time_total}\t%{errormsg}' \
-      "$probe_url")"
-  else
-    raw="$(curl -sS -o /dev/null \
-      --connect-timeout "$probe_connect_timeout" \
-      --max-time "$probe_max_time" \
-      -w '%{http_code}\t%{time_total}\t%{errormsg}' \
-      "$probe_url")"
-  fi
+  raw="$(curl "${curl_args[@]}" 2>"$err_file")"
   exit_code=$?
   set -e
 
-  IFS=$'\t' read -r http_code time_total err_msg <<< "$raw"
+  if [[ -s "$err_file" ]]; then
+    err_msg="$(tr '\r\n' '  ' < "$err_file" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  fi
+  rm -f "$err_file"
+
+  IFS=$'\t' read -r http_code time_total <<< "$raw"
   http_code="${http_code:-000}"
   PROBE_HTTP_CODE="$http_code"
 
