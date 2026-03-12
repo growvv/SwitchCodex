@@ -7,7 +7,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $script:CODEX_HOME = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
-$script:PROFILES_DIR = if ($env:CODEX_PROFILES_DIR) { $env:CODEX_PROFILES_DIR } else { Join-Path $script:CODEX_HOME "config" }
+$script:DEFAULT_PROFILES_DIR = Join-Path $script:CODEX_HOME "profiles"
+$script:LEGACY_PROFILES_DIR = Join-Path $script:CODEX_HOME "config"
+$script:PROFILES_DIR = if ($env:CODEX_PROFILES_DIR) { $env:CODEX_PROFILES_DIR } else { $script:DEFAULT_PROFILES_DIR }
 $script:AUTH_FILE = Join-Path $script:CODEX_HOME "auth.json"
 $script:CONFIG_FILE = Join-Path $script:CODEX_HOME "config.toml"
 $script:BACKUP_ROOT = Join-Path $script:PROFILES_DIR "_backup"
@@ -83,9 +85,20 @@ function Color-ProbeState([string]$State) {
 }
 
 function Ensure-ProfilesDir {
+  Migrate-LegacyProfilesDir
   if (-not (Test-Path -LiteralPath $script:PROFILES_DIR)) {
     New-Item -ItemType Directory -Path $script:PROFILES_DIR -Force | Out-Null
   }
+}
+
+function Migrate-LegacyProfilesDir {
+  if ($env:CODEX_PROFILES_DIR) { return }
+  if ($script:PROFILES_DIR -ne $script:DEFAULT_PROFILES_DIR) { return }
+  if (Test-Path -LiteralPath $script:PROFILES_DIR) { return }
+  if (-not (Test-Path -LiteralPath $script:LEGACY_PROFILES_DIR -PathType Container)) { return }
+
+  Move-Item -LiteralPath $script:LEGACY_PROFILES_DIR -Destination $script:PROFILES_DIR
+  Write-Host "Migrated legacy profile directory: $($script:LEGACY_PROFILES_DIR) -> $($script:PROFILES_DIR)" -ForegroundColor Yellow
 }
 
 function Validate-ProfileName([string]$Profile) {
@@ -475,20 +488,52 @@ function Cmd-List {
 }
 
 function Cmd-Status {
-  $provider = Read-Provider $script:CONFIG_FILE
+  $profile = Active-Profile
+  if ([string]::IsNullOrEmpty($profile)) { $profile = "manual" }
+
   $status = "missing-files"
   $latency = "-"
+  $model = "-"
+  $baseUrl = ""
+  $checkedAt = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+  if (Test-Path -LiteralPath $script:CONFIG_FILE -PathType Leaf) {
+    $model = Read-TomlStringField $script:CONFIG_FILE "model"
+    if ([string]::IsNullOrEmpty($model)) { $model = "-" }
+  }
+
   if ((Test-Path -LiteralPath $script:CONFIG_FILE -PathType Leaf) -and (Test-Path -LiteralPath $script:AUTH_FILE -PathType Leaf)) {
     $fields = Read-ConnectionFields $script:CONFIG_FILE $script:AUTH_FILE
+    $baseUrl = $fields.base_url
     $probe = Probe-ConnectionQuick $fields.base_url $fields.api_key
     $status = $probe.status
     $latency = $probe.latency
+  } elseif (Test-Path -LiteralPath $script:CONFIG_FILE -PathType Leaf) {
+    $status = "missing-auth"
+    $fields = Read-ConnectionFields $script:CONFIG_FILE $script:AUTH_FILE
+    $baseUrl = $fields.base_url
+  } elseif (Test-Path -LiteralPath $script:AUTH_FILE -PathType Leaf) {
+    $status = "missing-config"
   }
 
-  Write-Host -NoNewline "status: "
+  Write-Colored "profile" "Cyan" $true
+  Write-Host ": $profile"
+  Write-Colored "status" "Cyan" $true
+  Write-Host -NoNewline ": "
   Write-Colored $status (Color-ProbeState $status)
-  Write-Host "latency: $latency"
-  Write-Host "provider: $provider"
+  Write-Colored "latency" "Cyan" $true
+  Write-Host -NoNewline ": "
+  Write-Colored $latency "Blue"
+  Write-Colored "model" "Cyan" $true
+  Write-Host ": $model"
+  Write-Colored "base_url" "Cyan" $true
+  if ([string]::IsNullOrEmpty($baseUrl)) {
+    Write-Host ": -"
+  } else {
+    Write-Host ": $baseUrl"
+  }
+  Write-Colored "time" "Cyan" $true
+  Write-Host ": $checkedAt"
 }
 
 function Cmd-Save([string]$Profile) {

@@ -1,110 +1,66 @@
 # SwitchCodex
 
-一个简单的 provider/profile 切换脚本：
+**注意：`install` 会把当前脚本目录加入 `PATH`，因此安装后需要继续保留这个仓库，不能随意删除、移动或改名。**
 
-- 把不同 provider 的配置放到 `~/.codex/config/<profile>/`
-- 每个 profile 下固定两个文件：`auth.json` 和 `config.toml`
-- 切换时把 `~/.codex/auth.json` 和 `~/.codex/config.toml` 指向对应 profile
-- 支持安装/卸载 `sp` shell 命令
+一个仓库，同时维护 Codex 和 Claude Code 的 profile 切换脚本。
 
-## 文件结构
+## 仓库结构
 
 ```text
-~/.codex/
-├── auth.json
-├── config.toml
-└── config/
-    ├── api111/
-    │   ├── auth.json
-    │   └── config.toml
-    ├── cliproxy/
-    │   ├── auth.json
-    │   └── config.toml
-    └── cliproxy_school/
-        ├── auth.json
-        └── config.toml
+SwitchCodex/
+├── codex/
+│   ├── README.md
+│   ├── switch-provider.sh
+│   └── switch-provider.ps1
+├── claude/
+│   ├── README.md
+│   └── switch-claude.sh
+├── changlog.md
+└── AGENTS.md
 ```
 
-## 用法
+## 统一规范
 
-### Bash / Zsh
+- Codex profile 目录：`~/.codex/profiles/<profile>/`
+- Claude profile 目录：`~/.claude/profiles/<profile>/`
+- 两边都统一支持：`list`、`status`、`save`、`import`、`use`、`install`、`uninstall`
+- 安装后的快捷命令：
+  - Codex：`sp`
+  - Claude Code：`spcc`
+
+## 快速入口
+
+### Codex
 
 ```bash
-cd ~/.codex/SwitchCodex
-chmod +x switch-provider.sh
-
-# 看当前状态
+cd /path/to/SwitchCodex/codex
 ./switch-provider.sh status
-
-# 列出所有 profile
-./switch-provider.sh list
-
-# 保存当前正在使用的 auth/config 为一个 profile
-./switch-provider.sh save api111
-
-# 从已有文件导入一个 profile
-./switch-provider.sh import cliproxy ~/.codex/auth_cliproxy.json ~/.codex/config_cliproxy.toml
-
-# 安装 shell 快捷命令：加入 PATH，并安装 sp 命令
 ./switch-provider.sh install
-
-# 卸载 shell 快捷命令
-./switch-provider.sh uninstall
-
-# 切换到某个 profile
-./switch-provider.sh use cliproxy
-
-# 也支持直接把 profile 名作为参数
-./switch-provider.sh api111
+sp list
+sp use cliproxy
 ```
 
-### PowerShell
+Windows PowerShell:
 
 ```powershell
-Set-Location ~/.codex/SwitchCodex
-
-# 看当前状态
+Set-Location /path/to/SwitchCodex/codex
 pwsh -NoProfile -File .\switch-provider.ps1 status
-
-# 列出所有 profile
-pwsh -NoProfile -File .\switch-provider.ps1 list
-
-# 保存当前正在使用的 auth/config 为一个 profile
-pwsh -NoProfile -File .\switch-provider.ps1 save api111
-
-# 从已有文件导入一个 profile
-pwsh -NoProfile -File .\switch-provider.ps1 import cliproxy ~/.codex/auth_cliproxy.json ~/.codex/config_cliproxy.toml
-
-# 安装 PowerShell 快捷命令：写入 PowerShell profile，并安装 sp 函数
 pwsh -NoProfile -File .\switch-provider.ps1 install
-
-# 也可以指定 profile 文件
-pwsh -NoProfile -File .\switch-provider.ps1 install $PROFILE.CurrentUserCurrentHost
-
-# 卸载 PowerShell 快捷命令
-pwsh -NoProfile -File .\switch-provider.ps1 uninstall
-
-# 切换到某个 profile
-pwsh -NoProfile -File .\switch-provider.ps1 use cliproxy
-
-# 也支持直接把 profile 名作为参数
-pwsh -NoProfile -File .\switch-provider.ps1 api111
-
-# 安装/卸载后重新加载当前 PowerShell profile
-. $PROFILE.CurrentUserCurrentHost
+sp list
 ```
 
-## 说明
+### Claude Code
 
-- `use <profile>` 默认使用软链接切换，便于直接维护各 profile 下的真实文件。
-- 首次从根目录普通文件切到 profile 时，会把原来的 `~/.codex/auth.json` 和 `~/.codex/config.toml` 备份到 `~/.codex/config/_backup/<timestamp>/`。
-- 新增 provider 时，只要准备好 `~/.codex/config/<profile>/auth.json` 和 `~/.codex/config/<profile>/config.toml`，然后执行 `./switch-provider.sh <profile>` 即可。
-- `install [rc-file]` 会把脚本目录写入 `PATH`，并安装 `sp` shell 函数；默认写入当前 shell 对应的 `~/.zshrc` / `~/.bashrc` / `~/.profile`。
-- `uninstall [rc-file]` 会移除安装时写入的 shell block。
-- `switch-provider.ps1 install [profile-file]` 会把脚本目录写入 `PATH`，并安装 `sp` PowerShell 函数；默认写入 `$PROFILE.CurrentUserCurrentHost`。
-- `switch-provider.ps1 uninstall [profile-file]` 会移除安装时写入的 PowerShell block。
-- Bash / Zsh 下的 `sp list` / `sp status` 会对 endpoint 做快速连接探测（默认探测 `<base_url>/models`）；在 TTY 终端下会彩色显示表头和状态。
-- Bash / Zsh 下的 `sp status`（以及直接执行 `sp`）展示五项：`profile`、`status`、`latency`、`model`、`time`。
-- Bash / Zsh 下的 `sp list` 采用流式输出，列为：`profile`、`state`、`model`、`latency`；多个 profile 谁先探测完成就先显示谁，避免长时间无输出。
-- `sp list` / `sp status` 的连接探测总超时默认按 `3` 秒执行。
-- 可选环境变量：`SP_PROBE_CONNECT_TIMEOUT`（默认 `0.8` 秒）、`SP_PROBE_MAX_TIME`（默认 `3` 秒）。
+```bash
+cd /path/to/SwitchCodex/claude
+./switch-claude.sh status
+./switch-claude.sh install
+spcc list
+spcc use openrouter
+```
+
+## 详细说明
+
+- Codex 侧说明见 [codex/README.md](./codex/README.md)
+- Claude 侧说明见 [claude/README.md](./claude/README.md)
+- 仓库变更记录见 [changlog.md](./changlog.md)

@@ -2,7 +2,9 @@
 set -euo pipefail
 
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-PROFILES_DIR="${CODEX_PROFILES_DIR:-$CODEX_HOME/config}"
+DEFAULT_PROFILES_DIR="$CODEX_HOME/profiles"
+LEGACY_PROFILES_DIR="$CODEX_HOME/config"
+PROFILES_DIR="${CODEX_PROFILES_DIR:-$DEFAULT_PROFILES_DIR}"
 AUTH_FILE="$CODEX_HOME/auth.json"
 CONFIG_FILE="$CODEX_HOME/config.toml"
 BACKUP_ROOT="$PROFILES_DIR/_backup"
@@ -152,7 +154,18 @@ validate_profile_name() {
 }
 
 ensure_profiles_dir() {
+  migrate_legacy_profiles_dir
   mkdir -p "$PROFILES_DIR"
+}
+
+migrate_legacy_profiles_dir() {
+  [[ -n "${CODEX_PROFILES_DIR:-}" ]] && return 0
+  [[ "$PROFILES_DIR" == "$DEFAULT_PROFILES_DIR" ]] || return 0
+  [[ -d "$PROFILES_DIR" ]] && return 0
+  [[ -d "$LEGACY_PROFILES_DIR" ]] || return 0
+
+  mv "$LEGACY_PROFILES_DIR" "$PROFILES_DIR"
+  note "Migrated legacy profile directory: $LEGACY_PROFILES_DIR -> $PROFILES_DIR"
 }
 
 profile_dir() {
@@ -984,6 +997,8 @@ cmd_status() {
   printf '\n'
   paint "${CLR_BOLD}${CLR_CYAN}" "model"
   echo ": $current_model"
+  paint "${CLR_BOLD}${CLR_CYAN}" "base_url"
+  echo ": ${current_base_url:--}"
   paint "${CLR_BOLD}${CLR_CYAN}" "time"
   echo ": $current_time"
 }

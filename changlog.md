@@ -170,3 +170,54 @@
   - 仓库之前没有持续性的过程记录规范，历史信息容易散落在会话或提交里。
 - 解决方法：
   - 用 `changlog.md` 做统一变更台账，并在 `AGENTS.md` 固化要求。
+
+## 2026-03-12 21:27:32 +0800 — 当前工作区变更（未提交）
+- 操作：
+  - 将仓库重组为两个一级目录：`codex/` 与 `claude/`，把原本根目录下的 Codex 脚本和 `SwitchClaude/` 内的 Claude 脚本合并进同一个仓库结构。
+  - 新增根目录总览 `README.md`，并新增 `codex/README.md`，同时重写 `claude/README.md`，统一两套脚本的目录规范、子命令说明和安装方式。
+  - 将 Codex 的 profile 根目录默认值从 `~/.codex/config/` 调整为 `~/.codex/profiles/`，并在 Bash / PowerShell 脚本里加入旧目录自动迁移逻辑。
+  - 将 Claude Code 的快捷命令从 `spc` 改为 `spcc`，并把 `list`、`status`、`install`、`uninstall` 的颜色高亮风格对齐到 Codex。
+- 设置方法：
+  - Codex:
+    - `cd /path/to/SwitchCodex/codex`
+    - `./switch-provider.sh install`
+    - `sp list`
+  - Claude Code:
+    - `cd /path/to/SwitchCodex/claude`
+    - `./switch-claude.sh install`
+    - `spcc status`
+  - Codex 首次运行时，如果本地只有旧目录 `~/.codex/config/`，脚本会自动迁移到 `~/.codex/profiles/`。
+- 遇到的问题：
+  - 原仓库处于“根目录一个脚本仓 + `SwitchClaude/` 一个嵌套仓”的状态，不利于统一维护。
+  - `SwitchClaude/` 目录内残留独立 `.git` 元数据，会阻碍真正合并成单仓。
+  - Claude 的输出样式和命令名与 Codex 不一致，用户使用成本偏高。
+- 解决方法：
+  - 统一为单仓双目录结构，并移除嵌套仓依赖。
+  - 为 Codex 增加旧目录迁移逻辑，避免直接改目录后让现有 profile 丢失。
+  - 将 Claude 的安装命令统一为 `spcc`，并补齐与 Codex 一致的彩色表头、状态色和延迟高亮。
+
+## 2026-03-12 21:46:08 +0800 — 当前工作区变更（未提交）
+- 操作：
+  - 给 `codex/switch-provider.sh` 的 `sp` / `sp status` 输出补上 `base_url` 字段。
+  - 同步把 `codex/switch-provider.ps1` 的 `status` 输出补齐为 `profile`、`status`、`latency`、`model`、`base_url`、`time`，与 Bash 和 Claude 侧保持一致。
+  - 更新 `codex/README.md` 的状态输出说明。
+- 设置方法：
+  - `cd /path/to/SwitchCodex/codex`
+  - `./switch-provider.sh status`
+  - `sp status`
+- 遇到的问题：
+  - `codex` 侧虽然已经能读取 `base_url`，但状态展示没有打印出来，和 `spcc status` 不一致。
+  - PowerShell 侧状态输出字段更少，也与当前统一规范不一致。
+- 解决方法：
+  - 直接在 Bash 状态输出中追加 `base_url` 行。
+  - 重做 PowerShell `Cmd-Status` 的展示结构，统一字段和顺序。
+
+## 2026-03-12 21:54:21 +0800 — 当前工作区变更（未提交）
+- 操作：
+  - 在根目录 `README.md`、`codex/README.md`、`claude/README.md` 开头新增加粗提示，说明 `install` 会把当前脚本目录加入 `PATH`。
+- 设置方法：
+  - 安装后需要保留当前仓库目录不变；如果移动了仓库位置，需要重新执行对应脚本的 `install`。
+- 遇到的问题：
+  - 仅从安装命令本身不容易意识到 shell profile 里引用的是仓库当前路径，用户可能误删或移动仓库。
+- 解决方法：
+  - 在 README 最开头加入醒目的保留仓库说明，提前提示路径依赖。
