@@ -135,7 +135,7 @@ color_for_probe_state() {
     auth-failed|missing-key|endpoint-mismatch|rate-limited)
       printf '%s' "$CLR_YELLOW"
       ;;
-    timeout|unreachable|server-error|curl-error|no-base-url)
+    timeout|unreachable|server-error|curl-error|no-base-url|missing-config|missing-auth|empty|missing-files|error)
       printf '%s' "$CLR_RED"
       ;;
     *)
@@ -199,6 +199,7 @@ except Exception:
 
 config_path, auth_path = sys.argv[1:3]
 provider = ""
+model = ""
 base_url = ""
 api_key = ""
 
@@ -207,6 +208,7 @@ try:
         with open(config_path, "rb") as f:
             config = tomllib.load(f)
         provider = config.get("model_provider") or ""
+        model = str(config.get("model") or "")
         provider_cfg = (config.get("model_providers") or {}).get(provider, {}) if provider else {}
         if isinstance(provider_cfg, dict):
             base_url = str(provider_cfg.get("base_url") or "")
@@ -216,6 +218,9 @@ try:
         provider_match = re.search(r'^\s*model_provider\s*=\s*"([^"]+)"', text, re.MULTILINE)
         if provider_match:
             provider = provider_match.group(1)
+        model_match = re.search(r'^\s*model\s*=\s*"([^"]+)"', text, re.MULTILINE)
+        if model_match:
+            model = model_match.group(1)
         if provider:
             in_section = False
             section = f"[model_providers.{provider}]"
@@ -241,9 +246,157 @@ except Exception:
     pass
 
 print(f"provider\t{provider}")
+print(f"model\t{model}")
 print(f"base_url\t{base_url}")
 print(f"api_key\t{api_key}")
 PY
+}
+
+profile_file_state() {
+  local dir="$1"
+  local has_auth=0
+  local has_config=0
+
+  [[ -f "$dir/auth.json" ]] && has_auth=1
+  [[ -f "$dir/config.toml" ]] && has_config=1
+
+  if [[ "$has_auth" -eq 0 && "$has_config" -eq 0 ]]; then
+    echo "empty"
+  elif [[ "$has_auth" -eq 0 ]]; then
+    echo "missing-auth"
+  elif [[ "$has_config" -eq 0 ]]; then
+    echo "missing-config"
+  else
+    echo "ready"
+  fi
+}
+
+read_profile_snapshot() {
+  local profile="$1"
+  local auth_path config_path
+  auth_path="$(profile_auth "$profile")"
+  config_path="$(profile_config "$profile")"
+
+  local provider="unknown"
+  local model="-"
+  local base_url=""
+  local api_key=""
+
+  [[ -f "$config_path" ]] && provider="$(read_provider "$config_path")"
+
+  while IFS=$'\t' read -r key value; do
+    case "$key" in
+      provider)
+        [[ -n "$value" ]] && provider="$value"
+        ;;
+      model)
+        [[ -n "$value" ]] && model="$value"
+        ;;
+      base_url)
+        base_url="$value"
+        ;;
+      api_key)
+        api_key="$value"
+        ;;
+    esac
+  done < <(read_connection_fields "$config_path" "$auth_path")
+
+  printf '%s\t%s\t%s\t%s\n' "$provider" "$model" "$base_url" "$api_key"
+}
+
+read_current_snapshot() {
+  local provider="unknown"
+  local model="-"
+  local base_url=""
+  local api_key=""
+
+  [[ -f "$CONFIG_FILE" ]] && provider="$(read_provider "$CONFIG_FILE")"
+
+  while IFS=$'\t' read -r key value; do
+    case "$key" in
+      provider)
+        [[ -n "$value" ]] && provider="$value"
+        ;;
+      model)
+        [[ -n "$value" ]] && model="$value"
+        ;;
+      base_url)
+        base_url="$value"
+        ;;
+      api_key)
+        api_key="$value"
+        ;;
+    esac
+  done < <(read_connection_fields "$CONFIG_FILE" "$AUTH_FILE")
+
+  printf '%s\t%s\t%s\t%s\n' "$provider" "$model" "$base_url" "$api_key"
+}
+
+emit_stream_list_record() {
+  local profile="$1"
+  local dir file_state provider model base_url api_key state latency
+
+  dir="$(profile_dir "$profile")"
+  file_state="$(profile_file_state "$dir")"
+  provider="unknown"
+  model="-"
+  base_url=""
+  api_key=""
+  state="$file_state"
+  latency="-"
+
+  if [[ -f "$dir/config.toml" || -f "$dir/auth.json" ]]; then
+    IFS=$'\t' read -r provider model base_url api_key < <(read_profile_snapshot "$profile")
+  fi
+
+  if [[ "$file_state" == "ready" ]]; then
+    probe_connection_quick "$base_url" "$api_key"
+    state="$PROBE_STATUS"
+    latency="${PROBE_LATENCY:--}"
+  fi
+
+  printf '%s\t%s\t%s\t%s\n' "$profile" "$state" "$model" "$latency"
+}
+
+print_list_header() {
+  local w_profile="$1"
+  local w_state="$2"
+  local w_model="$3"
+  local w_latency="$4"
+  local header_line=""
+
+  header_line="$(printf "%-*s  %-*s  %-*s  %-*s" \
+    "$w_profile" "PROFILE" \
+    "$w_state" "STATE" \
+    "$w_model" "MODEL" \
+    "$w_latency" "LATENCY")"
+
+  if [[ "$COLOR_ENABLED" -eq 1 ]]; then
+    paint "${CLR_BOLD}${CLR_CYAN}" "$header_line"
+    printf '\n'
+  else
+    echo "$header_line"
+  fi
+}
+
+print_list_row() {
+  local profile="$1"
+  local state="$2"
+  local model="$3"
+  local latency="$4"
+  local w_profile="$5"
+  local w_state="$6"
+  local w_model="$7"
+  local w_latency="$8"
+
+  print_plain_padded "$profile" "$w_profile"
+  printf '  '
+  print_colored_padded "$(color_for_probe_state "$state")" "$state" "$w_state"
+  printf '  '
+  print_plain_padded "$model" "$w_model"
+  printf '  '
+  print_colored_padded "$CLR_BLUE" "$latency" "$w_latency"
+  printf '\n'
 }
 
 probe_connection_quick() {
@@ -701,167 +854,138 @@ cmd_list() {
   ensure_profiles_dir
   init_colors
 
-  local current_profile=""
-  current_profile="$(active_profile || true)"
-
-  local found=0
-  local dir base provider state probe_status probe_detail probe_latency row
-  local base_url="" api_key=""
-  local has_auth=0 has_config=0
-  local -a normal_rows=()
-  local active_row=""
-
+  local -a profiles=()
+  local dir profile provider model base_url api_key state_name
   local h_profile="PROFILE"
-  local h_provider="PROVIDER"
-  local h_state="FILE_STATE"
-  local h_connect="CONNECT"
+  local h_state="STATE"
+  local h_model="MODEL"
   local h_latency="LATENCY"
-  local h_detail="DETAIL"
   local w_profile=${#h_profile}
-  local w_provider=${#h_provider}
   local w_state=${#h_state}
-  local w_connect=${#h_connect}
+  local w_model=${#h_model}
   local w_latency=${#h_latency}
 
+  shopt -s nullglob
   for dir in "$PROFILES_DIR"/*; do
     [[ -d "$dir" ]] || continue
-    base="$(basename "$dir")"
-    [[ "$base" == "_backup" ]] && continue
-    found=1
+    profile="$(basename "$dir")"
+    [[ "$profile" == "_backup" ]] && continue
+    profiles+=("$profile")
 
-    state="ready"
-    has_auth=0
-    has_config=0
-    [[ -f "$dir/auth.json" ]] && has_auth=1
-    [[ -f "$dir/config.toml" ]] && has_config=1
-    [[ "$has_auth" -eq 1 ]] || state="missing-auth"
-    [[ "$has_config" -eq 1 ]] || state="missing-config"
-    if [[ "$has_auth" -eq 0 && "$has_config" -eq 0 ]]; then
-      state="empty"
-    fi
-    if [[ "$base" == "$current_profile" ]]; then
-      state="active"
-    fi
-
-    provider="$(read_provider "$dir/config.toml")"
+    provider="unknown"
+    model="-"
     base_url=""
     api_key=""
-    probe_status="skipped"
-    probe_detail="-"
-    probe_latency="-"
-
-    if [[ "$has_auth" -eq 1 && "$has_config" -eq 1 ]]; then
-      while IFS=$'\t' read -r key value; do
-        case "$key" in
-          base_url)
-            base_url="$value"
-            ;;
-          api_key)
-            api_key="$value"
-            ;;
-        esac
-      done < <(read_connection_fields "$dir/config.toml" "$dir/auth.json")
-
-      probe_connection_quick "$base_url" "$api_key" "3"
-      probe_status="$PROBE_STATUS"
-      probe_detail="$PROBE_DETAIL"
-      probe_latency="$PROBE_LATENCY"
+    if [[ -f "$dir/config.toml" || -f "$dir/auth.json" ]]; then
+      IFS=$'\t' read -r provider model base_url api_key < <(read_profile_snapshot "$profile")
     fi
 
-    row="${base}"$'\t'"${provider}"$'\t'"${state}"$'\t'"${probe_status}"$'\t'"${probe_latency}"$'\t'"${probe_detail}"
-    if [[ "$state" == "active" ]]; then
-      active_row="$row"
-    else
-      normal_rows+=("$row")
-    fi
-
-    (( ${#base} > w_profile )) && w_profile=${#base}
-    (( ${#provider} > w_provider )) && w_provider=${#provider}
-    (( ${#state} > w_state )) && w_state=${#state}
-    (( ${#probe_status} > w_connect )) && w_connect=${#probe_status}
-    (( ${#probe_latency} > w_latency )) && w_latency=${#probe_latency}
+    (( ${#profile} > w_profile )) && w_profile=${#profile}
+    (( ${#model} > w_model )) && w_model=${#model}
   done
+  shopt -u nullglob
 
-  if [[ "$found" -eq 0 ]]; then
+  if [[ "${#profiles[@]}" -eq 0 ]]; then
     echo "(no profiles under $PROFILES_DIR)"
     return 0
   fi
 
-  local header_line=""
-  header_line="$(printf "%-*s  %-*s  %-*s  %-*s  %-*s  %s" \
-    "$w_profile" "$h_profile" \
-    "$w_provider" "$h_provider" \
-    "$w_state" "$h_state" \
-    "$w_connect" "$h_connect" \
-    "$w_latency" "$h_latency" \
-    "$h_detail")"
-  if [[ "$COLOR_ENABLED" -eq 1 ]]; then
-    paint "${CLR_BOLD}${CLR_CYAN}" "$header_line"
-    printf '\n'
-  else
-    echo "$header_line"
-  fi
+  for state_name in online auth-failed missing-key endpoint-mismatch rate-limited timeout unreachable server-error curl-error no-base-url missing-auth missing-config empty; do
+    (( ${#state_name} > w_state )) && w_state=${#state_name}
+  done
+  (( 7 > w_latency )) && w_latency=7
 
-  local -a rows=()
-  if [[ -n "$active_row" ]]; then
-    rows+=("$active_row")
-  fi
-  for row in "${normal_rows[@]}"; do
-    rows+=("$row")
+  print_list_header "$w_profile" "$w_state" "$w_model" "$w_latency"
+
+  local tmp_dir done_count any_output result_file row_state row_model row_latency
+  local -a pids=()
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/switchcodex-list.XXXXXX")"
+  done_count=0
+
+  for profile in "${profiles[@]}"; do
+    (
+      set +e
+      local tmp_file final_file
+      tmp_file="$tmp_dir/${profile}.$$.$RANDOM.tmp"
+      final_file="$tmp_dir/${profile}.done"
+      if emit_stream_list_record "$profile" >"$tmp_file"; then
+        mv -f "$tmp_file" "$final_file"
+      else
+        printf '%s\t%s\t%s\t%s\n' "$profile" "error" "-" "-" >"$tmp_file"
+        mv -f "$tmp_file" "$final_file"
+      fi
+    ) &
+    pids+=("$!")
   done
 
-  for row in "${rows[@]}"; do
-    IFS=$'\t' read -r base provider state probe_status probe_latency probe_detail <<< "$row"
-    print_plain_padded "$base" "$w_profile"
-    printf '  '
-    print_plain_padded "$provider" "$w_provider"
-    printf '  '
-    print_colored_padded "$(color_for_file_state "$state")" "$state" "$w_state"
-    printf '  '
-    print_colored_padded "$(color_for_probe_state "$probe_status")" "$probe_status" "$w_connect"
-    printf '  '
-    print_colored_padded "$CLR_BLUE" "$probe_latency" "$w_latency"
-    printf '  '
-    paint "$CLR_DIM" "$probe_detail"
-    printf '\n'
+  while (( done_count < ${#profiles[@]} )); do
+    any_output=0
+    shopt -s nullglob
+    for result_file in "$tmp_dir"/*.done; do
+      [[ -f "$result_file" ]] || continue
+      IFS=$'\t' read -r profile row_state row_model row_latency < "$result_file"
+      print_list_row "$profile" "$row_state" "$row_model" "$row_latency" "$w_profile" "$w_state" "$w_model" "$w_latency"
+      rm -f "$result_file"
+      done_count=$((done_count + 1))
+      any_output=1
+    done
+    shopt -u nullglob
+
+    if (( done_count < ${#profiles[@]} && any_output == 0 )); then
+      sleep 0.05
+    fi
   done
+
+  for pid in "${pids[@]}"; do
+    wait "$pid"
+  done
+  rm -rf "$tmp_dir"
 }
 
 cmd_status() {
   init_colors
 
-  local current_provider
-  local current_base_url="" current_api_key=""
-  local probe_status="missing-files"
-  local probe_latency="-"
-  current_provider="$(read_provider "$CONFIG_FILE")"
+  local current_profile current_status current_latency current_model current_time
+  local current_provider current_base_url current_api_key
 
-  if [[ -f "$CONFIG_FILE" && -f "$AUTH_FILE" ]]; then
-    while IFS=$'\t' read -r key value; do
-      case "$key" in
-        base_url)
-          current_base_url="$value"
-          ;;
-        api_key)
-          current_api_key="$value"
-          ;;
-      esac
-    done < <(read_connection_fields "$CONFIG_FILE" "$AUTH_FILE")
-    probe_connection_quick "$current_base_url" "$current_api_key"
-    probe_status="$PROBE_STATUS"
-    probe_latency="$PROBE_LATENCY"
+  current_profile="$(active_profile || true)"
+  [[ -n "$current_profile" ]] || current_profile="manual"
+  current_status="missing-files"
+  current_latency="-"
+  current_model="-"
+  current_provider="unknown"
+  current_base_url=""
+  current_api_key=""
+  current_time="$(date '+%Y-%m-%d %H:%M:%S')"
+
+  if [[ -f "$CONFIG_FILE" || -f "$AUTH_FILE" ]]; then
+    IFS=$'\t' read -r current_provider current_model current_base_url current_api_key < <(read_current_snapshot)
   fi
 
+  if [[ -f "$CONFIG_FILE" && -f "$AUTH_FILE" ]]; then
+    probe_connection_quick "$current_base_url" "$current_api_key"
+    current_status="$PROBE_STATUS"
+    current_latency="${PROBE_LATENCY:--}"
+  elif [[ -f "$CONFIG_FILE" ]]; then
+    current_status="missing-auth"
+  elif [[ -f "$AUTH_FILE" ]]; then
+    current_status="missing-config"
+  fi
+
+  paint "${CLR_BOLD}${CLR_CYAN}" "profile"
+  echo ": $current_profile"
   paint "${CLR_BOLD}${CLR_CYAN}" "status"
   printf ': '
-  paint "$(color_for_probe_state "$probe_status")" "$probe_status"
+  paint "$(color_for_probe_state "$current_status")" "$current_status"
   printf '\n'
   paint "${CLR_BOLD}${CLR_CYAN}" "latency"
   printf ': '
-  paint "$CLR_BLUE" "$probe_latency"
+  paint "$CLR_BLUE" "$current_latency"
   printf '\n'
-  paint "${CLR_BOLD}${CLR_CYAN}" "provider"
-  echo ": $current_provider"
+  paint "${CLR_BOLD}${CLR_CYAN}" "model"
+  echo ": $current_model"
+  paint "${CLR_BOLD}${CLR_CYAN}" "time"
+  echo ": $current_time"
 }
 
 cmd_save() {

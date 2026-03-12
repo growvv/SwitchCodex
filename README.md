@@ -103,8 +103,8 @@ pwsh -NoProfile -File .\switch-provider.ps1 api111
 - `uninstall [rc-file]` 会移除安装时写入的 shell block。
 - `switch-provider.ps1 install [profile-file]` 会把脚本目录写入 `PATH`，并安装 `sp` PowerShell 函数；默认写入 `$PROFILE.CurrentUserCurrentHost`。
 - `switch-provider.ps1 uninstall [profile-file]` 会移除安装时写入的 PowerShell block。
-- `sp list` / `sp status` 会对 endpoint 做快速连接探测（默认探测 `<base_url>/models`）；在 TTY 终端下会彩色显示表头和状态。
-- `sp status` 展示三项：`status`、`latency` 和 `provider`。
-- `sp list` 会把当前 active profile 放在第一行，并按内容自适应列宽。
+- Bash / Zsh 下的 `sp list` / `sp status` 会对 endpoint 做快速连接探测（默认探测 `<base_url>/models`）；在 TTY 终端下会彩色显示表头和状态。
+- Bash / Zsh 下的 `sp status`（以及直接执行 `sp`）展示五项：`profile`、`status`、`latency`、`model`、`time`。
+- Bash / Zsh 下的 `sp list` 采用流式输出，列为：`profile`、`state`、`model`、`latency`；多个 profile 谁先探测完成就先显示谁，避免长时间无输出。
 - `sp list` / `sp status` 的连接探测总超时默认按 `3` 秒执行。
 - 可选环境变量：`SP_PROBE_CONNECT_TIMEOUT`（默认 `0.8` 秒）、`SP_PROBE_MAX_TIME`（默认 `3` 秒）。
